@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { scopeOf } from '../auth/middleware.ts';
 import { getDb } from '../db/index.ts';
 import {
   createMember,
   deleteMember,
   getMember,
   listMembers,
+  MemberInUseError,
   updateMember,
 } from '../domain/members.ts';
 
@@ -21,8 +23,8 @@ const memberSchema = z.object({
 
 export const membersRouter: Router = Router();
 
-membersRouter.get('/', (_req, res) => {
-  res.json({ members: listMembers(getDb()) });
+membersRouter.get('/', (req, res) => {
+  res.json({ members: listMembers(getDb(), scopeOf(req).householdId) });
 });
 
 membersRouter.post('/', (req, res) => {
@@ -31,7 +33,9 @@ membersRouter.post('/', (req, res) => {
     res.status(400).json({ error: 'Données invalides', details: parsed.error.issues });
     return;
   }
-  res.status(201).json({ member: createMember(getDb(), parsed.data) });
+  res
+    .status(201)
+    .json({ member: createMember(getDb(), scopeOf(req).householdId, parsed.data) });
 });
 
 membersRouter.patch('/:id', (req, res) => {
@@ -40,7 +44,12 @@ membersRouter.patch('/:id', (req, res) => {
     res.status(400).json({ error: 'Données invalides', details: parsed.error.issues });
     return;
   }
-  const member = updateMember(getDb(), Number(req.params.id), parsed.data);
+  const member = updateMember(
+    getDb(),
+    scopeOf(req).householdId,
+    Number(req.params.id),
+    parsed.data,
+  );
   if (!member) {
     res.status(404).json({ error: 'Membre introuvable' });
     return;
@@ -49,11 +58,20 @@ membersRouter.patch('/:id', (req, res) => {
 });
 
 membersRouter.delete('/:id', (req, res) => {
+  const { householdId } = scopeOf(req);
   const id = Number(req.params.id);
-  if (!getMember(getDb(), id)) {
+  if (!getMember(getDb(), householdId, id)) {
     res.status(404).json({ error: 'Membre introuvable' });
     return;
   }
-  deleteMember(getDb(), id);
-  res.status(204).end();
+  try {
+    deleteMember(getDb(), householdId, id);
+    res.status(204).end();
+  } catch (error) {
+    if (error instanceof MemberInUseError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
 });

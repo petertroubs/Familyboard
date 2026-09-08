@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { scopeOf } from '../auth/middleware.ts';
 import { getDb } from '../db/index.ts';
 import {
   dispatchDueReminders,
@@ -15,13 +16,13 @@ notificationsRouter.get('/', (req, res) => {
   const memberId = typeof req.query.memberId === 'string' && req.query.memberId
     ? Number(req.query.memberId)
     : undefined;
-  const notifications = listNotifications(getDb(), memberId);
+  const notifications = listNotifications(getDb(), scopeOf(req).householdId, memberId);
   res.json({
     notifications,
     unread: notifications.filter((item) => item.read_at === null).length,
     settings: {
       reminderHour: config.reminderHour,
-      timezone: config.timezone,
+      timezone: req.auth?.household.timezone ?? config.timezone,
       emailEnabled: isEmailConfigured(),
       offsets: REMINDER_OFFSETS.map((key) => ({ key, label: REMINDER_LABELS[key] })),
     },
@@ -29,7 +30,7 @@ notificationsRouter.get('/', (req, res) => {
 });
 
 notificationsRouter.post('/:id/read', (req, res) => {
-  if (!markNotificationRead(getDb(), Number(req.params.id))) {
+  if (!markNotificationRead(getDb(), scopeOf(req).householdId, Number(req.params.id))) {
     res.status(404).json({ error: 'Notification introuvable' });
     return;
   }
@@ -38,7 +39,7 @@ notificationsRouter.post('/:id/read', (req, res) => {
 
 notificationsRouter.post('/read-all', (req, res) => {
   const memberId = typeof req.body?.memberId === 'number' ? req.body.memberId : undefined;
-  res.json({ updated: markAllNotificationsRead(getDb(), memberId) });
+  res.json({ updated: markAllNotificationsRead(getDb(), scopeOf(req).householdId, memberId) });
 });
 
 /** Déclenche manuellement l'envoi des rappels échus (utile pour tester la configuration). */

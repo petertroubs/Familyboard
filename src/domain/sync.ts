@@ -2,8 +2,8 @@ import { DateTime } from 'luxon';
 import { config } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { getProvider, ProviderError, type CalendarProvider } from '../providers/index.ts';
-import { getAccessToken, recordSyncResult } from './accounts.ts';
-import { getEvent, resolvePushTargets, toCalendarPayload } from './events.ts';
+import { getAccessToken, getAccountUnscoped, recordSyncResult } from './accounts.ts';
+import { getEventUnscoped, resolvePushTargets, toCalendarPayload } from './events.ts';
 import { syncRemindersForEvent } from './reminders.ts';
 import type { Account, EventLink, EventRow, ExternalEvent, ProviderId } from './types.ts';
 
@@ -65,16 +65,19 @@ export interface PushOutcome {
  */
 export async function pushEvent(
   db: Db,
+  householdId: number,
   eventId: number,
   accountIds?: number[],
   deps: SyncDeps = {},
 ): Promise<PushOutcome[]> {
   const { provider, accessToken, now } = resolveDeps(deps);
-  const event = getEvent(db, eventId);
-  if (!event) throw new Error(`Événement introuvable : ${eventId}`);
+  const event = getEventUnscoped(db, eventId);
+  if (!event || event.household_id !== householdId) {
+    throw new Error(`Événement introuvable : ${eventId}`);
+  }
 
   const outcomes: PushOutcome[] = [];
-  for (const account of resolvePushTargets(db, accountIds)) {
+  for (const account of resolvePushTargets(db, householdId, accountIds)) {
     const base = {
       accountId: account.id,
       provider: account.provider,
@@ -142,6 +145,7 @@ function saveLink(
 /** Supprime les copies distantes d'un événement avant sa suppression locale. */
 export async function deleteRemoteCopies(
   db: Db,
+  householdId: number,
   eventId: number,
   deps: SyncDeps = {},
 ): Promise<void> {
@@ -152,10 +156,9 @@ export async function deleteRemoteCopies(
     )
     .all(eventId);
   for (const link of links) {
-    const account = db
-      .prepare<[number], Account>('SELECT * FROM accounts WHERE id = ?')
-      .get(link.account_id);
-    if (!account || account.sync_enabled === 0) continue;
+    const account = getAccountUnscoped(db, link.account_id);
+    if (!account || account.household_id !== householdId) continue;
+    if (account.sync_enabled === 0) continue;
     if (!['push', 'both'].includes(account.sync_direction)) continue;
     try {
       const token = await accessToken(db, account);
@@ -196,9 +199,7 @@ export async function pullAccount(
   window?: SyncWindow,
 ): Promise<PullReport> {
   const { provider, accessToken, now } = resolveDeps(deps);
-  const account = db
-    .prepare<[number], Account>('SELECT * FROM accounts WHERE id = ?')
-    .get(accountId);
+  const account = getAccountUnscoped(db, accountId);
   if (!account) throw new Error(`Compte introuvable : ${accountId}`);
 
   const report: PullReport = {
@@ -247,7 +248,7 @@ export async function pullAccount(
       continue;
     }
 
-    const event = getEvent(db, link.event_id);
+    const event = getEventUnscoped(db, link.event_id);
     if (!event) {
       db.prepare('DELETE FROM event_links WHERE id = ?').run(link.id);
       importEvent(db, account, remote, currentTime);
@@ -285,12 +286,13 @@ function importEvent(db: Db, account: Account, remote: ExternalEvent, now: Date)
   return db.transaction(() => {
     const info = db
       .prepare(
-        `INSERT INTO events (title, description, location, starts_at, ends_at, all_day,
-                             timezone, owner_member_id, source)
-         VALUES (@title, @description, @location, @starts_at, @ends_at, @all_day,
-                 @timezone, @owner_member_id, @source)`,
+        `INSERT INTO events (household_id, title, description, location, starts_at, ends_at,
+                             all_day, timezone, owner_member_id, source)
+         VALUES (@household_id, @title, @description, @location, @starts_at, @ends_at,
+                 @all_day, @timezone, @owner_member_id, @source)`,
       )
       .run({
+        household_id: account.household_id,
         title: remote.title,
         description: remote.description,
         location: remote.location,
@@ -304,8 +306,9 @@ function importEvent(db: Db, account: Account, remote: ExternalEvent, now: Date)
     const eventId = Number(info.lastInsertRowid);
     if (account.member_id) {
       db.prepare(
-        'INSERT OR IGNORE INTO event_participants (event_id, member_id) VALUES (?, ?)',
-      ).run(eventId, account.member_id);
+        `INSERT OR IGNORE INTO event_participants (event_id, member_id)
+         SELECT ?, id FROM members WHERE id = ? AND household_id = ?`,
+      ).run(eventId, account.member_id, account.household_id);
     }
     db.prepare(
       `INSERT INTO event_links (event_id, account_id, external_id, external_updated_at, last_pulled_at)
@@ -358,7 +361,7 @@ function applyExternalEvent(db: Db, event: EventRow, remote: ExternalEvent, now:
 
 /** Supprime un événement importé dont la source a disparu. */
 function deleteImportedEvent(db: Db, link: EventLink, provider: ProviderId): boolean {
-  const event = getEvent(db, link.event_id);
+  const event = getEventUnscoped(db, link.event_id);
   if (!event) {
     db.prepare('DELETE FROM event_links WHERE id = ?').run(link.id);
     return false;

@@ -1,0 +1,39 @@
+# Déploiement complet : l'application + Caddy, qui obtient et renouvelle
+# automatiquement le certificat TLS de votre domaine.
+#
+#   1. renseigner .env (au minimum APP_BASE_URL, DOMAIN, GOOGLE_CLIENT_ID/SECRET)
+#   2. docker compose up -d
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/familyboard.db
+      # Caddy est le seul proxy devant l'application.
+      TRUST_PROXY: "1"
+    volumes:
+      - familyboard-data:/data
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      # Domaine servi, repris depuis .env (ex. agenda.mondomaine.fr).
+      DOMAIN: ${DOMAIN:?renseignez DOMAIN dans .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  familyboard-data:
+  caddy-data:
+  caddy-config:

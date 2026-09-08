@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { openDatabase, type Db } from '../src/db/index.ts';
 import { createEvent, getEvent, listEvents } from '../src/domain/events.ts';
+import { createHousehold } from '../src/domain/households.ts';
 import { deleteRemoteCopies, pullAccount, pushEvent } from '../src/domain/sync.ts';
 import type {
   CalendarEventPayload,
@@ -56,12 +57,17 @@ function fakeProvider(id: ProviderId) {
   return { provider, store, calls };
 }
 
+const HOUSEHOLD = 1;
+
 function setup(providerId: ProviderId = 'outlook') {
   const db = openDatabase(':memory:');
-  db.prepare(`INSERT INTO members (id, name, email) VALUES (1, 'Camille', 'c@exemple.fr')`).run();
+  createHousehold(db, 'Famille de test');
   db.prepare(
-    `INSERT INTO accounts (id, member_id, provider, kind, account_email, calendar_id, access_token, refresh_token, expires_at)
-     VALUES (1, 1, ?, 'pro', 'pro@entreprise.fr', 'principal', 'token', 'refresh', NULL)`,
+    `INSERT INTO members (id, household_id, name, email) VALUES (1, 1, 'Camille', 'c@exemple.fr')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO accounts (id, household_id, member_id, provider, kind, account_email, calendar_id, access_token, refresh_token, expires_at)
+     VALUES (1, 1, 1, ?, 'pro', 'pro@entreprise.fr', 'principal', 'token', 'refresh', NULL)`,
   ).run(providerId);
   const fake = fakeProvider(providerId);
   const deps = {
@@ -90,7 +96,7 @@ function seedRemote(db: Db, fake: ReturnType<typeof fakeProvider>, overrides: Pa
 
 test('une date créée dans l’app est poussée vers l’agenda lié puis mise à jour', async () => {
   const { db, fake, deps } = setup();
-  const event = createEvent(db, {
+  const event = createEvent(db, HOUSEHOLD, {
     title: 'Réunion parents-profs',
     description: 'Salle B12',
     location: 'École',
@@ -100,12 +106,12 @@ test('une date créée dans l’app est poussée vers l’agenda lié puis mise 
     syncAccountIds: [],
   } as never);
 
-  const created = await pushEvent(db, event.id, [1], deps);
+  const created = await pushEvent(db, HOUSEHOLD, event.id, [1], deps);
   assert.equal(created[0]!.status, 'created');
   assert.equal(fake.calls.create, 1);
   assert.equal(fake.store.size, 1);
 
-  const again = await pushEvent(db, event.id, [1], deps);
+  const again = await pushEvent(db, HOUSEHOLD, event.id, [1], deps);
   assert.equal(again[0]!.status, 'updated', 'la deuxième synchro met à jour la copie distante');
   assert.equal(fake.calls.create, 1);
   assert.equal(fake.calls.update, 1);
@@ -122,7 +128,7 @@ test('une date ajoutée dans Outlook remonte dans l’agenda familial avec ses r
   });
 
   assert.equal(report.created, 1);
-  const events = listEvents(db);
+  const events = listEvents(db, HOUSEHOLD);
   assert.equal(events.length, 1);
   const imported = events[0]!;
   assert.equal(imported.title, 'Comité de direction');
@@ -147,7 +153,7 @@ test('un import répété ne duplique pas les événements', async () => {
 
   assert.equal(second.created, 0);
   assert.equal(second.updated, 0);
-  assert.equal(listEvents(db).length, 1);
+  assert.equal(listEvents(db, HOUSEHOLD).length, 1);
   db.close();
 });
 
@@ -166,7 +172,7 @@ test('une date déplacée dans Outlook met à jour l’événement et replanifie
 
   assert.equal(report.updated, 1);
   assert.equal(report.created, 0);
-  const imported = listEvents(db)[0]!;
+  const imported = listEvents(db, HOUSEHOLD)[0]!;
   assert.equal(imported.title, 'Comité de direction (reporté)');
   assert.equal(imported.starts_at, '2026-10-22T16:30:00.000Z');
   const weekBefore = imported.reminders.find((item) => item.offset_key === 'week_before')!;
@@ -178,31 +184,31 @@ test('une date supprimée dans Outlook disparaît de l’agenda familial', async
   const { db, fake, deps } = setup();
   seedRemote(db, fake);
   await pullAccount(db, 1, deps);
-  assert.equal(listEvents(db).length, 1);
+  assert.equal(listEvents(db, HOUSEHOLD).length, 1);
 
   fake.store.clear();
   const report = await pullAccount(db, 1, deps);
 
   assert.equal(report.deleted, 1);
-  assert.equal(listEvents(db).length, 0);
+  assert.equal(listEvents(db, HOUSEHOLD).length, 0);
   db.close();
 });
 
 test('une date de l’app absente de la fenêtre distante n’est jamais supprimée localement', async () => {
   const { db, fake, deps } = setup();
-  const event = createEvent(db, {
+  const event = createEvent(db, HOUSEHOLD, {
     title: 'Anniversaire',
     startsAt: '2026-10-15T18:30',
     participantIds: [],
     syncAccountIds: [],
   } as never);
-  await pushEvent(db, event.id, [1], deps);
+  await pushEvent(db, HOUSEHOLD, event.id, [1], deps);
 
   fake.store.clear(); // la copie distante disparaît
   const report = await pullAccount(db, 1, deps);
 
   assert.equal(report.deleted, 0);
-  assert.ok(getEvent(db, event.id), 'l’événement local créé dans l’app est conservé');
+  assert.ok(getEvent(db, HOUSEHOLD, event.id), 'l’événement local créé dans l’app est conservé');
   db.close();
 });
 
@@ -210,9 +216,9 @@ test('un événement importé n’est pas renvoyé à sa source', async () => {
   const { db, fake, deps } = setup();
   seedRemote(db, fake);
   await pullAccount(db, 1, deps);
-  const imported = listEvents(db)[0]!;
+  const imported = listEvents(db, HOUSEHOLD)[0]!;
 
-  const outcomes = await pushEvent(db, imported.id, [1], deps);
+  const outcomes = await pushEvent(db, HOUSEHOLD, imported.id, [1], deps);
 
   assert.equal(outcomes[0]!.status, 'unchanged');
   assert.equal(fake.calls.update, 0, 'aucun aller-retour inutile vers le provider');
@@ -221,16 +227,16 @@ test('un événement importé n’est pas renvoyé à sa source', async () => {
 
 test('supprimer une date retire aussi la copie distante', async () => {
   const { db, fake, deps } = setup();
-  const event = createEvent(db, {
+  const event = createEvent(db, HOUSEHOLD, {
     title: 'Dentiste',
     startsAt: '2026-10-15T18:30',
     participantIds: [],
     syncAccountIds: [],
   } as never);
-  await pushEvent(db, event.id, [1], deps);
+  await pushEvent(db, HOUSEHOLD, event.id, [1], deps);
   assert.equal(fake.store.size, 1);
 
-  await deleteRemoteCopies(db, event.id, deps);
+  await deleteRemoteCopies(db, HOUSEHOLD, event.id, deps);
 
   assert.equal(fake.calls.delete, 1);
   assert.equal(fake.store.size, 0);
@@ -239,7 +245,7 @@ test('supprimer une date retire aussi la copie distante', async () => {
 
 test('une panne du provider est signalée sans interrompre la sauvegarde locale', async () => {
   const { db, deps } = setup();
-  const event = createEvent(db, {
+  const event = createEvent(db, HOUSEHOLD, {
     title: 'Vaccin',
     startsAt: '2026-10-15T18:30',
     participantIds: [],
@@ -252,11 +258,11 @@ test('une panne du provider est signalée sans interrompre la sauvegarde locale'
       throw new Error('jeton expiré, reconnectez le compte');
     },
   };
-  const outcomes = await pushEvent(db, event.id, [1], failing);
+  const outcomes = await pushEvent(db, HOUSEHOLD, event.id, [1], failing);
 
   assert.equal(outcomes[0]!.status, 'error');
   assert.match(outcomes[0]!.error!, /jeton expiré/);
-  assert.ok(getEvent(db, event.id), 'la date reste enregistrée dans l’agenda familial');
+  assert.ok(getEvent(db, HOUSEHOLD, event.id), 'la date reste enregistrée dans l’agenda familial');
   const account = db
     .prepare<[], { last_sync_error: string }>('SELECT last_sync_error FROM accounts WHERE id = 1')
     .get()!;

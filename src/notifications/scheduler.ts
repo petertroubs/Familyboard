@@ -1,6 +1,6 @@
 import { config } from '../config.ts';
 import type { Db } from '../db/index.ts';
-import { getEvent } from '../domain/events.ts';
+import { getEventUnscoped } from '../domain/events.ts';
 import { resolveRecipients } from '../domain/members.ts';
 import {
   listDueReminders,
@@ -41,7 +41,7 @@ export async function dispatchDueReminders(
 
   for (const reminder of listDueReminders(db, now)) {
     report.processed += 1;
-    const event = getEvent(db, reminder.event_id);
+    const event = getEventUnscoped(db, reminder.event_id);
     if (!event) {
       markReminderSent(db, reminder.id);
       continue;
@@ -53,6 +53,7 @@ export async function dispatchDueReminders(
       const message = buildReminderMessage(event, reminder.offset_key, recipient, appUrl);
       // Le fil in-app est la trace de référence : il est écrit même si l'e-mail échoue.
       insertNotification(db, {
+        householdId: event.household_id,
         memberId: recipient.id,
         eventId: event.id,
         reminderId: reminder.id,
@@ -86,6 +87,7 @@ export async function dispatchDueReminders(
 }
 
 export interface NewNotification {
+  householdId: number;
   memberId: number | null;
   eventId: number | null;
   reminderId: number | null;
@@ -97,8 +99,8 @@ export interface NewNotification {
 export function insertNotification(db: Db, notification: NewNotification): number {
   const info = db
     .prepare(
-      `INSERT INTO notifications (member_id, event_id, reminder_id, channel, title, body)
-       VALUES (@memberId, @eventId, @reminderId, @channel, @title, @body)`,
+      `INSERT INTO notifications (household_id, member_id, event_id, reminder_id, channel, title, body)
+       VALUES (@householdId, @memberId, @eventId, @reminderId, @channel, @title, @body)`,
     )
     .run(notification);
   return Number(info.lastInsertRowid);
@@ -111,18 +113,24 @@ export interface NotificationFeedItem extends NotificationRow {
   offset_label: string | null;
 }
 
-export function listNotifications(db: Db, memberId?: number, limit = 50): NotificationFeedItem[] {
+export function listNotifications(
+  db: Db,
+  householdId: number,
+  memberId?: number,
+  limit = 50,
+): NotificationFeedItem[] {
   const rows = db
     .prepare<Record<string, unknown>, NotificationFeedItem>(
       `SELECT n.*, e.title AS event_title, e.starts_at AS event_starts_at, r.offset_key
        FROM notifications n
        LEFT JOIN events e ON e.id = n.event_id
        LEFT JOIN reminders r ON r.id = n.reminder_id
-       WHERE (@memberId IS NULL OR n.member_id = @memberId)
+       WHERE n.household_id = @householdId
+         AND (@memberId IS NULL OR n.member_id = @memberId)
        ORDER BY n.created_at DESC, n.id DESC
        LIMIT @limit`,
     )
-    .all({ memberId: memberId ?? null, limit });
+    .all({ householdId, memberId: memberId ?? null, limit });
   return rows.map((row) => ({
     ...row,
     offset_label: row.offset_key
@@ -131,19 +139,29 @@ export function listNotifications(db: Db, memberId?: number, limit = 50): Notifi
   }));
 }
 
-export function markNotificationRead(db: Db, id: number): boolean {
+export function markNotificationRead(db: Db, householdId: number, id: number): boolean {
   return (
-    db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE id = ?`).run(id).changes > 0
+    db
+      .prepare(
+        `UPDATE notifications SET read_at = datetime('now')
+         WHERE id = ? AND household_id = ?`,
+      )
+      .run(id, householdId).changes > 0
   );
 }
 
-export function markAllNotificationsRead(db: Db, memberId?: number): number {
-  const statement = memberId
-    ? db.prepare(
-        `UPDATE notifications SET read_at = datetime('now') WHERE member_id = ? AND read_at IS NULL`,
-      )
-    : db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL`);
-  return (memberId ? statement.run(memberId) : statement.run()).changes;
+export function markAllNotificationsRead(
+  db: Db,
+  householdId: number,
+  memberId?: number,
+): number {
+  return db
+    .prepare(
+      `UPDATE notifications SET read_at = datetime('now')
+       WHERE household_id = @householdId AND read_at IS NULL
+         AND (@memberId IS NULL OR member_id = @memberId)`,
+    )
+    .run({ householdId, memberId: memberId ?? null }).changes;
 }
 
 export interface RunningScheduler {

@@ -7,15 +7,28 @@ import type { Account, AccountKind, ProviderId, SyncDirection, TokenSet } from '
 /** Marge de sécurité avant expiration : on rafraîchit un peu en avance. */
 const REFRESH_MARGIN_SECONDS = 120;
 
-export function listAccounts(db: Db): Account[] {
-  return db.prepare<[], Account>('SELECT * FROM accounts ORDER BY provider, kind').all();
+export function listAccounts(db: Db, householdId: number): Account[] {
+  return db
+    .prepare<[number], Account>(
+      'SELECT * FROM accounts WHERE household_id = ? ORDER BY provider, kind',
+    )
+    .all(householdId);
 }
 
-export function getAccount(db: Db, id: number): Account | undefined {
+export function getAccount(db: Db, householdId: number, id: number): Account | undefined {
+  return db
+    .prepare<[number, number], Account>('SELECT * FROM accounts WHERE id = ? AND household_id = ?')
+    .get(id, householdId);
+}
+
+/** Lecture sans portée, réservée aux traitements de fond (synchronisation périodique). */
+export function getAccountUnscoped(db: Db, id: number): Account | undefined {
   return db.prepare<[number], Account>('SELECT * FROM accounts WHERE id = ?').get(id);
 }
 
 export interface UpsertAccountInput {
+  householdId: number;
+  userId: number | null;
   provider: ProviderId;
   kind: AccountKind;
   memberId: number | null;
@@ -31,15 +44,18 @@ export interface UpsertAccountInput {
  * provider/adresse/usage) rafraîchit les jetons sans dupliquer la ligne.
  */
 export function upsertAccount(db: Db, input: UpsertAccountInput): Account {
+  // Un même agenda peut être relié par deux foyers distincts : l'unicité est
+  // évaluée à l'intérieur du foyer.
   const existing = db
-    .prepare<[string, string, string], Account>(
-      'SELECT * FROM accounts WHERE provider = ? AND account_email = ? AND kind = ?',
+    .prepare<[number, string, string, string], Account>(
+      `SELECT * FROM accounts
+       WHERE household_id = ? AND provider = ? AND account_email = ? AND kind = ?`,
     )
-    .get(input.provider, input.accountEmail, input.kind);
+    .get(input.householdId, input.provider, input.accountEmail, input.kind);
 
   if (existing) {
     db.prepare(
-      `UPDATE accounts SET member_id = @member_id, display_name = @display_name,
+      `UPDATE accounts SET member_id = @member_id, user_id = @user_id, display_name = @display_name,
               access_token = @access_token,
               refresh_token = CASE WHEN @refresh_token = '' THEN refresh_token ELSE @refresh_token END,
               expires_at = @expires_at, scope = @scope, last_sync_error = NULL
@@ -47,25 +63,28 @@ export function upsertAccount(db: Db, input: UpsertAccountInput): Account {
     ).run({
       id: existing.id,
       member_id: input.memberId,
+      user_id: input.userId,
       display_name: input.displayName,
       access_token: input.tokens.accessToken,
       refresh_token: input.tokens.refreshToken ?? '',
       expires_at: input.tokens.expiresAt,
       scope: input.tokens.scope,
     });
-    return getAccount(db, existing.id)!;
+    return getAccount(db, input.householdId, existing.id)!;
   }
 
   const info = db
     .prepare(
-      `INSERT INTO accounts (member_id, provider, kind, account_email, display_name,
-                             calendar_id, calendar_name, access_token, refresh_token,
-                             expires_at, scope)
-       VALUES (@member_id, @provider, @kind, @account_email, @display_name,
-               @calendar_id, @calendar_name, @access_token, @refresh_token,
-               @expires_at, @scope)`,
+      `INSERT INTO accounts (household_id, user_id, member_id, provider, kind, account_email,
+                             display_name, calendar_id, calendar_name, access_token,
+                             refresh_token, expires_at, scope)
+       VALUES (@household_id, @user_id, @member_id, @provider, @kind, @account_email,
+               @display_name, @calendar_id, @calendar_name, @access_token,
+               @refresh_token, @expires_at, @scope)`,
     )
     .run({
+      household_id: input.householdId,
+      user_id: input.userId,
       member_id: input.memberId,
       provider: input.provider,
       kind: input.kind,
@@ -78,7 +97,7 @@ export function upsertAccount(db: Db, input: UpsertAccountInput): Account {
       expires_at: input.tokens.expiresAt,
       scope: input.tokens.scope,
     });
-  return getAccount(db, Number(info.lastInsertRowid))!;
+  return getAccount(db, input.householdId, Number(info.lastInsertRowid))!;
 }
 
 export interface AccountSettings {
@@ -91,10 +110,11 @@ export interface AccountSettings {
 
 export function updateAccountSettings(
   db: Db,
+  householdId: number,
   id: number,
   settings: AccountSettings,
 ): Account | undefined {
-  const current = getAccount(db, id);
+  const current = getAccount(db, householdId, id);
   if (!current) return undefined;
   db.prepare(
     `UPDATE accounts SET calendar_id = @calendar_id, calendar_name = @calendar_name,
@@ -109,11 +129,14 @@ export function updateAccountSettings(
       settings.syncEnabled === undefined ? current.sync_enabled : settings.syncEnabled ? 1 : 0,
     sync_direction: settings.syncDirection ?? current.sync_direction,
   });
-  return getAccount(db, id);
+  return getAccount(db, householdId, id);
 }
 
-export function deleteAccount(db: Db, id: number): boolean {
-  return db.prepare('DELETE FROM accounts WHERE id = ?').run(id).changes > 0;
+export function deleteAccount(db: Db, householdId: number, id: number): boolean {
+  return (
+    db.prepare('DELETE FROM accounts WHERE id = ? AND household_id = ?').run(id, householdId)
+      .changes > 0
+  );
 }
 
 export function recordSyncResult(db: Db, id: number, error?: string): void {
@@ -164,12 +187,13 @@ export function createOAuthState(
   db: Db,
   provider: ProviderId,
   kind: AccountKind,
-  memberId: number | null,
+  scope: { householdId: number; userId: number; memberId: number | null },
 ): string {
   const state = randomBytes(24).toString('base64url');
   db.prepare(
-    'INSERT INTO oauth_states (state, provider, kind, member_id) VALUES (?, ?, ?, ?)',
-  ).run(state, provider, kind, memberId);
+    `INSERT INTO oauth_states (state, provider, kind, member_id, household_id, user_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(state, provider, kind, scope.memberId, scope.householdId, scope.userId);
   // Purge des states abandonnés (plus de 30 minutes).
   db.prepare(`DELETE FROM oauth_states WHERE created_at < datetime('now', '-30 minutes')`).run();
   return state;
@@ -179,13 +203,15 @@ export interface ConsumedState {
   provider: ProviderId;
   kind: AccountKind;
   member_id: number | null;
+  household_id: number | null;
+  user_id: number | null;
 }
 
 /** Valide et consomme un state : un state ne peut servir qu'une fois. */
 export function consumeOAuthState(db: Db, state: string): ConsumedState | undefined {
   const row = db
     .prepare<[string], ConsumedState>(
-      'SELECT provider, kind, member_id FROM oauth_states WHERE state = ?',
+      'SELECT provider, kind, member_id, household_id, user_id FROM oauth_states WHERE state = ?',
     )
     .get(state);
   if (!row) return undefined;

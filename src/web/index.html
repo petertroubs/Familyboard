@@ -11,6 +11,27 @@
     />
   </head>
   <body>
+    <!-- Écran de connexion : seul élément visible tant qu'aucune session n'est ouverte. -->
+    <main id="login-screen" class="auth-page" hidden>
+      <div class="auth-card">
+        <div class="auth-mark" aria-hidden="true">📅</div>
+        <h1>Agenda familial</h1>
+        <p class="muted">
+          Les dates de la famille au même endroit, synchronisées avec vos agendas
+          Google et Outlook, avec des rappels une semaine avant, la veille et le jour J.
+        </p>
+        <a id="btn-login" class="btn google-signin" href="/api/auth/google/start">
+          Se connecter avec Google
+        </a>
+        <p id="login-invite" class="muted small" hidden></p>
+        <p id="login-unavailable" class="error" hidden>
+          La connexion Google n'est pas configurée sur ce serveur
+          (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).
+        </p>
+      </div>
+    </main>
+
+    <div id="app-shell" hidden>
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">📅</span>
@@ -31,6 +52,18 @@
           🔔 Rappels <span id="unread-badge" class="badge" hidden>0</span>
         </button>
         <button id="btn-new-event" class="btn primary" type="button">+ Nouvelle date</button>
+        <div class="account-menu">
+          <button id="btn-account" class="avatar-button" type="button" aria-haspopup="true" aria-expanded="false">
+            <img id="account-avatar" alt="" width="30" height="30" hidden />
+            <span id="account-initial" class="avatar-fallback"></span>
+          </button>
+          <div id="account-popover" class="popover" hidden>
+            <p class="popover-name" id="account-name"></p>
+            <p class="popover-mail muted small" id="account-email"></p>
+            <p class="popover-mail muted small" id="account-household"></p>
+            <button id="btn-logout" class="btn ghost small full" type="button">Se déconnecter</button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -80,6 +113,32 @@
         <section class="card">
           <h2>Module de rappels</h2>
           <ul id="reminder-info" class="reminder-info"></ul>
+        </section>
+
+        <section class="card">
+          <h2 id="household-title">Ma famille</h2>
+          <p class="muted small">
+            Partagez ce lien pour que vos proches rejoignent le même agenda avec
+            leur compte Google.
+          </p>
+          <div class="invite">
+            <input id="invite-url" type="text" readonly aria-label="Lien d'invitation" />
+            <button id="btn-copy-invite" class="btn small" type="button">Copier</button>
+          </div>
+          <p class="muted small">
+            Code : <strong id="invite-code"></strong>
+            <button id="btn-rotate-invite" class="btn small ghost" type="button" hidden>
+              Régénérer
+            </button>
+          </p>
+          <ul id="household-users" class="members"></ul>
+          <form id="household-rename" class="row" hidden>
+            <label class="field grow">
+              <span>Nom du foyer</span>
+              <input name="name" maxlength="80" required />
+            </label>
+            <button class="btn ghost" type="submit">Renommer</button>
+          </form>
         </section>
 
         <section class="card">
@@ -197,6 +256,8 @@
         </form>
       </div>
     </div>
+
+    </div><!-- /app-shell -->
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 

@@ -30,12 +30,28 @@ export function migrate(db: Db): void {
     db.prepare<[], { id: string }>('SELECT id FROM migrations').all().map((row) => row.id),
   );
   const insert = db.prepare('INSERT INTO migrations (id) VALUES (?)');
-  for (const migration of migrations) {
-    if (applied.has(migration.id)) continue;
-    db.transaction(() => {
-      db.exec(migration.sql);
-      insert.run(migration.id);
-    })();
+  const pending = migrations.filter((migration) => !applied.has(migration.id));
+  if (pending.length === 0) return;
+
+  // Les migrations qui reconstruisent une table (motif standard SQLite) doivent
+  // pouvoir la remplacer sans déclencher les suppressions en cascade. Le PRAGMA
+  // n'a aucun effet à l'intérieur d'une transaction : il se pose en amont.
+  db.pragma('foreign_keys = OFF');
+  try {
+    for (const migration of pending) {
+      db.transaction(() => {
+        db.exec(migration.sql);
+        insert.run(migration.id);
+      })();
+    }
+    const violations = db.pragma('foreign_key_check') as unknown[];
+    if (violations.length > 0) {
+      throw new Error(
+        `Migration incohérente : ${violations.length} référence(s) orpheline(s) détectée(s)`,
+      );
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
   }
 }
 

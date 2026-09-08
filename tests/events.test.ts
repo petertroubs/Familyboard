@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openDatabase } from '../src/db/index.ts';
+import { openDatabase, type Db } from '../src/db/index.ts';
+import { createHousehold } from '../src/domain/households.ts';
 import {
   createEvent,
   eventInputSchema,
@@ -12,6 +13,13 @@ import {
 
 function parse(input: Record<string, unknown>) {
   return eventInputSchema.parse(input);
+}
+
+/** Base de test avec un foyer prêt à l'emploi. */
+function setup(): { db: Db; householdId: number } {
+  const db = openDatabase(':memory:');
+  const household = createHousehold(db, 'Famille de test');
+  return { db, householdId: household.id };
 }
 
 test('une heure locale est convertie en instant UTC', () => {
@@ -61,30 +69,35 @@ test('un titre vide est rejeté par la validation', () => {
 });
 
 test('la liste filtre sur la fenêtre demandée et sur le membre', () => {
-  const db = openDatabase(':memory:');
-  db.prepare(`INSERT INTO members (id, name) VALUES (1, 'Camille'), (2, 'Alex')`).run();
+  const { db, householdId } = setup();
+  db.prepare(
+    `INSERT INTO members (id, household_id, name) VALUES (1, ?, 'Camille'), (2, ?, 'Alex')`,
+  ).run(householdId, householdId);
   const now = new Date('2026-09-01T10:00:00Z');
 
-  createEvent(db, parse({ title: 'Octobre', startsAt: '2026-10-15T18:30', participantIds: [1] }), { now });
-  createEvent(db, parse({ title: 'Novembre', startsAt: '2026-11-15T18:30', ownerMemberId: 2 }), { now });
+  createEvent(db, householdId, parse({ title: 'Octobre', startsAt: '2026-10-15T18:30', participantIds: [1] }), { now });
+  createEvent(db, householdId, parse({ title: 'Novembre', startsAt: '2026-11-15T18:30', ownerMemberId: 2 }), { now });
 
   assert.deepEqual(
-    listEvents(db, { from: '2026-10-01T00:00:00Z', to: '2026-10-31T00:00:00Z' }).map((e) => e.title),
+    listEvents(db, householdId, { from: '2026-10-01T00:00:00Z', to: '2026-10-31T00:00:00Z' }).map((e) => e.title),
     ['Octobre'],
   );
-  assert.deepEqual(listEvents(db, { memberId: 1 }).map((e) => e.title), ['Octobre']);
-  assert.deepEqual(listEvents(db, { memberId: 2 }).map((e) => e.title), ['Novembre']);
+  assert.deepEqual(listEvents(db, householdId, { memberId: 1 }).map((e) => e.title), ['Octobre']);
+  assert.deepEqual(listEvents(db, householdId, { memberId: 2 }).map((e) => e.title), ['Novembre']);
   db.close();
 });
 
 test('modifier un événement remplace ses participants', () => {
-  const db = openDatabase(':memory:');
-  db.prepare(`INSERT INTO members (id, name) VALUES (1, 'Camille'), (2, 'Alex')`).run();
+  const { db, householdId } = setup();
+  db.prepare(
+    `INSERT INTO members (id, household_id, name) VALUES (1, ?, 'Camille'), (2, ?, 'Alex')`,
+  ).run(householdId, householdId);
   const now = new Date('2026-09-01T10:00:00Z');
-  const event = createEvent(db, parse({ title: 'Sortie', startsAt: '2026-10-15T18:30', participantIds: [1] }), { now });
+  const event = createEvent(db, householdId, parse({ title: 'Sortie', startsAt: '2026-10-15T18:30', participantIds: [1] }), { now });
 
   const updated = updateEvent(
     db,
+    householdId,
     event.id,
     parse({ title: 'Sortie vélo', startsAt: '2026-10-16T14:00', participantIds: [2] }),
     { now },
@@ -97,14 +110,14 @@ test('modifier un événement remplace ses participants', () => {
 });
 
 test('supprimer un événement emporte ses rappels et notifications', () => {
-  const db = openDatabase(':memory:');
-  db.prepare(`INSERT INTO members (id, name) VALUES (1, 'Camille')`).run();
-  const event = createEvent(db, parse({ title: 'Dentiste', startsAt: '2026-10-15T18:30' }), {
+  const { db, householdId } = setup();
+  db.prepare(`INSERT INTO members (id, household_id, name) VALUES (1, ?, 'Camille')`).run(householdId);
+  const event = createEvent(db, householdId, parse({ title: 'Dentiste', startsAt: '2026-10-15T18:30' }), {
     now: new Date('2026-09-01T10:00:00Z'),
   });
   db.prepare(
-    `INSERT INTO notifications (member_id, event_id, title) VALUES (1, ?, 'rappel')`,
-  ).run(event.id);
+    `INSERT INTO notifications (household_id, member_id, event_id, title) VALUES (?, 1, ?, 'rappel')`,
+  ).run(householdId, event.id);
 
   db.prepare('DELETE FROM events WHERE id = ?').run(event.id);
 

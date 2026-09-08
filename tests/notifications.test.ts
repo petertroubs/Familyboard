@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { openDatabase, type Db } from '../src/db/index.ts';
 import { createEvent } from '../src/domain/events.ts';
+import { createHousehold } from '../src/domain/households.ts';
 import { buildReminderMessage } from '../src/notifications/messages.ts';
 import type { NotificationChannel } from '../src/notifications/channels.ts';
 import { dispatchDueReminders, listNotifications } from '../src/notifications/scheduler.ts';
@@ -23,15 +24,17 @@ function fakeChannel(options: { failing?: boolean } = {}) {
 
 function setup(): Db {
   const db = openDatabase(':memory:');
-  db.prepare(`INSERT INTO members (id, name, email) VALUES (1, 'Camille', 'camille@exemple.fr')`).run();
-  db.prepare(`INSERT INTO members (id, name, email) VALUES (2, 'Alex', 'alex@exemple.fr')`).run();
-  db.prepare(`INSERT INTO members (id, name, email) VALUES (3, 'Jo', NULL)`).run();
+  createHousehold(db, 'Famille de test');
+  db.prepare(`INSERT INTO members (id, household_id, name, email) VALUES (1, 1, 'Camille', 'camille@exemple.fr')`).run();
+  db.prepare(`INSERT INTO members (id, household_id, name, email) VALUES (2, 1, 'Alex', 'alex@exemple.fr')`).run();
+  db.prepare(`INSERT INTO members (id, household_id, name, email) VALUES (3, 1, 'Jo', NULL)`).run();
   return db;
 }
 
 function seedEvent(db: Db, participantIds: number[]) {
   return createEvent(
     db,
+    1,
     {
       title: 'Réunion parents-profs',
       description: 'Salle B12',
@@ -81,7 +84,7 @@ test('sans participant désigné, tout le foyer est prévenu', async () => {
   await dispatchDueReminders(db, { channels: [channel], now: new Date('2026-10-08T06:00:00Z') });
 
   // Trois membres notifiés dans le fil, deux joignables par e-mail.
-  assert.equal(listNotifications(db).length, 3);
+  assert.equal(listNotifications(db, 1).length, 3);
   assert.deepEqual(sent.map((item) => item.to).sort(), ['alex@exemple.fr', 'camille@exemple.fr']);
   db.close();
 });
@@ -114,7 +117,7 @@ test('le fil in-app est alimenté même quand l’e-mail échoue', async () => {
   });
 
   assert.equal(report.failed, 1);
-  const feed = listNotifications(db, 1);
+  const feed = listNotifications(db, 1, 1);
   assert.equal(feed.length, 1);
   assert.equal(feed[0]!.offset_label, 'Dans une semaine');
   const reminder = db
@@ -133,6 +136,8 @@ test('le message rappelle la date, l’heure et le lieu en français', () => {
   const event = seedEvent(db, [1]);
   const member: Member = {
     id: 1,
+    household_id: 1,
+    user_id: null,
     name: 'Camille',
     email: 'camille@exemple.fr',
     color: '#000',
@@ -154,6 +159,7 @@ test('un rappel de journée entière ne mentionne pas d’horaire', () => {
   const db = setup();
   const event = createEvent(
     db,
+    1,
     {
       title: 'Vacances scolaires',
       startsAt: '2026-12-20',
@@ -165,6 +171,8 @@ test('un rappel de journée entière ne mentionne pas d’horaire', () => {
   );
   const member: Member = {
     id: 1,
+    household_id: 1,
+    user_id: null,
     name: 'Camille',
     email: null,
     color: '#000',

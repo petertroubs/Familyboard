@@ -20,6 +20,15 @@ function bool(name: string, fallback: boolean): boolean {
 }
 
 const baseUrl = str('APP_BASE_URL', `http://localhost:${int('PORT', 3000)}`).replace(/\/+$/, '');
+const isHttps = baseUrl.startsWith('https://');
+
+/** Qui peut ouvrir un compte sur l'instance. */
+export type SignupMode = 'invite' | 'open' | 'allowlist';
+
+function signupMode(): SignupMode {
+  const raw = str('SIGNUP_MODE', 'invite').toLowerCase();
+  return raw === 'open' || raw === 'allowlist' ? raw : 'invite';
+}
 
 export const config = {
   port: int('PORT', 3000),
@@ -39,6 +48,19 @@ export const config = {
     clientSecret: str('MICROSOFT_CLIENT_SECRET'),
     tenantId: str('MICROSOFT_TENANT_ID', 'common'),
   },
+  auth: {
+    signupMode: signupMode(),
+    /** En mode 'allowlist', seules ces adresses peuvent se connecter. */
+    allowedEmails: str('ALLOWED_EMAILS')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean),
+    sessionTtlDays: int('SESSION_TTL_DAYS', 30),
+    /** Le cookie de session n'est marqué Secure que si le site est servi en HTTPS. */
+    cookieSecure: bool('COOKIE_SECURE', isHttps),
+  },
+  /** Nombre de proxys de confiance devant l'application (nginx/Caddy = 1). */
+  trustProxy: int('TRUST_PROXY', isHttps ? 1 : 0),
   smtp: {
     host: str('SMTP_HOST'),
     port: int('SMTP_PORT', 587),
@@ -63,4 +85,13 @@ export function redirectUri(provider: ProviderId): string {
 
 export function isEmailConfigured(): boolean {
   return Boolean(config.smtp.host);
+}
+
+/** La connexion à l'application repose sur le client OAuth Google. */
+export function isLoginConfigured(): boolean {
+  return isProviderConfigured('google');
+}
+
+export function loginRedirectUri(): string {
+  return `${config.baseUrl}/api/auth/google/callback`;
 }

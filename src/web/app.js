@@ -4,6 +4,9 @@
  */
 
 const state = {
+  session: null,
+  household: null,
+  users: [],
   members: [],
   events: [],
   accounts: [],
@@ -28,10 +31,54 @@ async function api(path, options = {}) {
   });
   if (response.status === 204) return null;
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    // Session expirée ou révoquée : on repasse sur l'écran de connexion.
+    showLogin({ authenticated: false, loginConfigured: true });
+    throw new Error(payload.error || 'Connexion requise');
+  }
   if (!response.ok) {
     throw new Error(payload.error || `Erreur ${response.status}`);
   }
   return payload;
+}
+
+// ─── Session ─────────────────────────────────────────────────────────────────
+
+function showLogin(session) {
+  state.session = null;
+  el('app-shell').hidden = true;
+  el('login-screen').hidden = false;
+  el('btn-login').hidden = !session.loginConfigured;
+  el('login-unavailable').hidden = Boolean(session.loginConfigured);
+
+  // Un lien d'invitation amène ici avec le code en paramètre : on le conserve
+  // pour l'ajouter à la demande de connexion.
+  const invite = new URLSearchParams(window.location.search).get('invite');
+  if (invite) {
+    el('btn-login').href = `/api/auth/google/start?invite=${encodeURIComponent(invite)}`;
+    el('login-invite').textContent =
+      'Vous avez été invité à rejoindre un agenda familial : connectez-vous pour le rejoindre.';
+    el('login-invite').hidden = false;
+  }
+}
+
+function renderAccountMenu() {
+  const user = state.session.user;
+  const avatar = el('account-avatar');
+  const initial = el('account-initial');
+  if (user.picture) {
+    avatar.src = user.picture;
+    avatar.hidden = false;
+    initial.hidden = true;
+  } else {
+    avatar.hidden = true;
+    initial.hidden = false;
+    initial.textContent = (user.name || user.email).slice(0, 1).toUpperCase();
+  }
+  el('account-name').textContent = user.name;
+  el('account-email').textContent = user.email;
+  el('account-household').textContent =
+    `${state.session.household.name}${user.role === 'owner' ? ' · responsable' : ''}`;
 }
 
 // ─── Dates : tout est affiché dans le fuseau du foyer ────────────────────────
@@ -126,13 +173,16 @@ async function loadAll() {
   const query = new URLSearchParams({ from, to });
   if (state.memberFilter) query.set('memberId', state.memberFilter);
 
-  const [members, events, accounts, notifications] = await Promise.all([
+  const [members, events, accounts, notifications, household] = await Promise.all([
     api('/members'),
     api(`/events?${query}`),
     api('/accounts'),
     api(`/notifications${state.memberFilter ? `?memberId=${state.memberFilter}` : ''}`),
+    api('/household'),
   ]);
 
+  state.household = household.household;
+  state.users = household.users;
   state.members = members.members;
   state.events = events.events;
   state.accounts = accounts.accounts;
@@ -146,6 +196,8 @@ async function loadAll() {
 // ─── Rendu ───────────────────────────────────────────────────────────────────
 
 function render() {
+  renderAccountMenu();
+  renderHousehold();
   renderSubtitle();
   renderMemberFilter();
   renderCalendar();
@@ -160,7 +212,7 @@ function renderSubtitle() {
   const linked = state.accounts.filter((account) => account.sync_enabled).length;
   const hour = String(state.settings.reminderHour).padStart(2, '0');
   el('topbar-subtitle').textContent =
-    `${state.events.length} date(s) · ${linked} agenda(s) synchronisé(s) · rappels à ${hour}h00 (${state.timezone})`;
+    `${state.household.name} · ${state.events.length} date(s) · ${linked} agenda(s) synchronisé(s) · rappels à ${hour}h00`;
 }
 
 function renderMemberFilter() {
@@ -177,6 +229,7 @@ function renderMemberFilter() {
 }
 
 function memberColor(memberId) {
+  if (!memberId) return '#4f7cff';
   return state.members.find((member) => member.id === memberId)?.color ?? '#4f7cff';
 }
 
@@ -381,6 +434,62 @@ function renderReminderInfo() {
     .join('');
 }
 
+function renderHousehold() {
+  const isOwner = state.session.user.role === 'owner';
+  el('household-title').textContent = state.household.name;
+  el('invite-url').value = state.household.inviteUrl;
+  el('invite-code').textContent = state.household.inviteCode;
+  el('btn-rotate-invite').hidden = !isOwner;
+
+  const renameForm = el('household-rename');
+  renameForm.hidden = !isOwner;
+  if (isOwner) renameForm.elements.name.value = state.household.name;
+
+  const list = el('household-users');
+  list.innerHTML = '';
+  for (const user of state.users) {
+    const item = document.createElement('li');
+    const role = user.role === 'owner' ? 'responsable' : 'membre';
+    item.innerHTML = `
+      <span class="swatch" data-color="${escapeHtml(memberColor(user.memberId))}"></span>
+      <span>${escapeHtml(user.name)}${user.isSelf ? ' (vous)' : ''}</span>
+      <span class="m-email">${escapeHtml(role)}</span>`;
+
+    if (isOwner && !user.isSelf) {
+      const promote = document.createElement('button');
+      promote.type = 'button';
+      promote.className = 'btn small ghost';
+      promote.textContent = user.role === 'owner' ? 'Retirer le rôle' : 'Responsable';
+      promote.addEventListener('click', async () => {
+        try {
+          await api(`/household/users/${user.id}`, {
+            method: 'PATCH',
+            body: { role: user.role === 'owner' ? 'member' : 'owner' },
+          });
+          await loadAll();
+        } catch (error) {
+          toast(error.message, 5000);
+        }
+      });
+      item.append(promote);
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'btn small danger';
+      remove.textContent = 'Retirer';
+      remove.addEventListener('click', async () => {
+        if (!confirm(`Retirer ${user.name} du foyer ? Ses dates restent dans l'agenda.`)) return;
+        await api(`/household/users/${user.id}`, { method: 'DELETE' });
+        toast('Compte retiré du foyer');
+        await loadAll();
+      });
+      item.append(remove);
+    }
+    paintSwatches(item);
+    list.append(item);
+  }
+}
+
 function renderMembers() {
   const list = el('members-list');
   list.innerHTML = '';
@@ -391,15 +500,20 @@ function renderMembers() {
   for (const member of state.members) {
     const item = document.createElement('li');
     item.innerHTML = `
-      <span class="swatch" style="background:${escapeHtml(member.color)}"></span>
+      <span class="swatch" data-color="${escapeHtml(member.color)}"></span>
       <span>${escapeHtml(member.name)}</span>
       <span class="m-email">${escapeHtml(member.email || 'sans e-mail')}</span>
       <button class="btn small ghost" type="button">Retirer</button>`;
     item.querySelector('button').addEventListener('click', async () => {
       if (!confirm(`Retirer ${member.name} du foyer ?`)) return;
-      await api(`/members/${member.id}`, { method: 'DELETE' });
-      await loadAll();
+      try {
+        await api(`/members/${member.id}`, { method: 'DELETE' });
+        await loadAll();
+      } catch (error) {
+        toast(error.message, 5000);
+      }
     });
+    paintSwatches(item);
     list.append(item);
   }
 }
@@ -464,11 +578,12 @@ function openEventDialog(event, dayKey) {
             (member) => `
       <label class="choice">
         <input type="checkbox" name="participant" value="${member.id}" ${participantIds.has(member.id) ? 'checked' : ''} />
-        <span class="swatch" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${escapeHtml(member.color)}"></span>
+        <span class="swatch" data-color="${escapeHtml(member.color)}"></span>
         <span>${escapeHtml(member.name)}</span>
       </label>`,
           )
           .join('');
+  paintSwatches(el('participants-choices'));
 
   // Cibles de synchronisation : pré-cochées si l'événement y est déjà lié,
   // sinon tous les comptes actifs en écriture pour une nouvelle date.
@@ -650,6 +765,18 @@ function connect(provider, kind) {
 
 // ─── Divers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Applique les couleurs portées par data-color.
+ *
+ * La politique de sécurité du contenu interdit les attributs `style` écrits
+ * dans le HTML ; passer par le CSSOM après insertion est autorisé.
+ */
+function paintSwatches(container) {
+  for (const node of container.querySelectorAll('[data-color]')) {
+    node.style.background = node.dataset.color;
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -759,6 +886,54 @@ function wire() {
     await loadAll();
   });
 
+  el('btn-account').addEventListener('click', () => {
+    const popover = el('account-popover');
+    popover.hidden = !popover.hidden;
+    el('btn-account').setAttribute('aria-expanded', String(!popover.hidden));
+  });
+  document.addEventListener('click', (domEvent) => {
+    if (!el('account-popover').hidden && !domEvent.target.closest('.account-menu')) {
+      el('account-popover').hidden = true;
+    }
+  });
+
+  el('btn-logout').addEventListener('click', async () => {
+    await api('/auth/logout', { method: 'POST' });
+    window.location.reload();
+  });
+
+  el('btn-copy-invite').addEventListener('click', async () => {
+    const field = el('invite-url');
+    try {
+      await navigator.clipboard.writeText(field.value);
+    } catch {
+      // Repli quand le presse-papiers est refusé (contexte non sécurisé).
+      field.select();
+      document.execCommand('copy');
+    }
+    toast('Lien d’invitation copié');
+  });
+
+  el('btn-rotate-invite').addEventListener('click', async () => {
+    if (!confirm('Régénérer le lien ? Les anciens liens ne fonctionneront plus.')) return;
+    await api('/household/invite/rotate', { method: 'POST' });
+    toast('Nouveau lien d’invitation généré');
+    await loadAll();
+  });
+
+  el('household-rename').addEventListener('submit', async (domEvent) => {
+    domEvent.preventDefault();
+    try {
+      await api('/household', {
+        method: 'PATCH',
+        body: { name: domEvent.target.elements.name.value },
+      });
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 5000);
+    }
+  });
+
   el('btn-connect-google').addEventListener('click', () => connect('google', 'personal'));
   el('btn-connect-outlook').addEventListener('click', () => connect('outlook', 'pro'));
   el('btn-pull-all').addEventListener('click', async () => {
@@ -810,6 +985,18 @@ function wire() {
 async function boot() {
   const key = new Intl.DateTimeFormat('sv-SE').format(new Date());
   state.cursor = { year: Number(key.slice(0, 4)), month: Number(key.slice(5, 7)) };
+
+  const session = await api('/auth/session').catch(() => ({ authenticated: false, loginConfigured: true }));
+  if (!session.authenticated) {
+    showLogin(session);
+    return;
+  }
+
+  state.session = session;
+  state.timezone = session.household.timezone || state.timezone;
+  el('login-screen').hidden = true;
+  el('app-shell').hidden = false;
+
   wire();
   try {
     await loadAll();

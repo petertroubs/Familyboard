@@ -5,8 +5,35 @@ export type EventSource = 'app' | ProviderId;
 export type ReminderOffset = 'week_before' | 'day_before' | 'same_day';
 export type ReminderStatus = 'pending' | 'sent' | 'failed' | 'skipped';
 
+export type UserRole = 'owner' | 'member';
+
+export interface Household {
+  id: number;
+  name: string;
+  /** Code du lien d'invitation, régénérable par le responsable du foyer. */
+  invite_code: string;
+  timezone: string | null;
+  created_at: string;
+}
+
+export interface User {
+  id: number;
+  household_id: number;
+  /** Identifiant Google stable, indépendant de l'adresse e-mail. */
+  google_sub: string;
+  email: string;
+  name: string;
+  picture: string;
+  role: UserRole;
+  created_at: string;
+  last_login_at: string | null;
+}
+
 export interface Member {
   id: number;
+  household_id: number;
+  /** Fiche reliée à un compte connecté, ou null pour un membre sans compte. */
+  user_id: number | null;
   name: string;
   email: string | null;
   color: string;
@@ -16,6 +43,7 @@ export interface Member {
 
 export interface EventRow {
   id: number;
+  household_id: number;
   title: string;
   description: string;
   location: string;
@@ -43,6 +71,9 @@ export interface Reminder {
 
 export interface Account {
   id: number;
+  household_id: number;
+  /** Utilisateur ayant relié ce compte. */
+  user_id: number | null;
   member_id: number | null;
   provider: ProviderId;
   kind: AccountKind;
@@ -73,6 +104,7 @@ export interface EventLink {
 
 export interface NotificationRow {
   id: number;
+  household_id: number;
   member_id: number | null;
   event_id: number | null;
   reminder_id: number | null;

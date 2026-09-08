@@ -1,0 +1,20 @@
+# Caddy obtient et renouvelle seul le certificat Let's Encrypt du domaine.
+# Prérequis : l'enregistrement DNS A (et AAAA) du domaine pointe vers ce serveur,
+# et les ports 80 et 443 sont ouverts.
+{$DOMAIN} {
+	encode zstd gzip
+
+	# En déploiement Docker Compose, "app" est le nom du service.
+	# En installation directe (systemd), remplacer par 127.0.0.1:3000.
+	reverse_proxy app:3000
+
+	header {
+		# Complète les en-têtes déjà posés par l'application.
+		Strict-Transport-Security "max-age=15552000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output file /data/access.log
+	}
+}

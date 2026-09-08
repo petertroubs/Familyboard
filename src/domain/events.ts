@@ -93,12 +93,19 @@ export function normalizeEventInput(input: EventInput): NormalizedEvent {
   };
 }
 
-export function getEvent(db: Db, id: number): EventRow | undefined {
+export function getEvent(db: Db, householdId: number, id: number): EventRow | undefined {
+  return db
+    .prepare<[number, number], EventRow>('SELECT * FROM events WHERE id = ? AND household_id = ?')
+    .get(id, householdId);
+}
+
+/** Lecture sans portée, réservée aux traitements de fond (rappels, synchro). */
+export function getEventUnscoped(db: Db, id: number): EventRow | undefined {
   return db.prepare<[number], EventRow>('SELECT * FROM events WHERE id = ?').get(id);
 }
 
-export function getEventDetail(db: Db, id: number): EventDetail | undefined {
-  const event = getEvent(db, id);
+export function getEventDetail(db: Db, householdId: number, id: number): EventDetail | undefined {
+  const event = getEvent(db, householdId, id);
   if (!event) return undefined;
   const participants = db
     .prepare<[number], Member>(
@@ -124,9 +131,13 @@ export interface ListEventsFilter {
   memberId?: number;
 }
 
-export function listEvents(db: Db, filter: ListEventsFilter = {}): EventDetail[] {
-  const clauses: string[] = [];
-  const params: Record<string, unknown> = {};
+export function listEvents(
+  db: Db,
+  householdId: number,
+  filter: ListEventsFilter = {},
+): EventDetail[] {
+  const clauses: string[] = ['e.household_id = @householdId'];
+  const params: Record<string, unknown> = { householdId };
   if (filter.from) {
     clauses.push('e.ends_at >= @from');
     params.from = filter.from;
@@ -143,21 +154,27 @@ export function listEvents(db: Db, filter: ListEventsFilter = {}): EventDetail[]
     );
     params.memberId = filter.memberId;
   }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const rows = db
     .prepare<Record<string, unknown>, EventRow>(
-      `SELECT e.* FROM events e ${where} ORDER BY e.starts_at`,
+      `SELECT e.* FROM events e WHERE ${clauses.join(' AND ')} ORDER BY e.starts_at`,
     )
     .all(params);
-  return rows.map((row) => getEventDetail(db, row.id)!);
+  return rows.map((row) => getEventDetail(db, householdId, row.id)!);
 }
 
-function replaceParticipants(db: Db, eventId: number, memberIds: number[]): void {
+function replaceParticipants(
+  db: Db,
+  householdId: number,
+  eventId: number,
+  memberIds: number[],
+): void {
   db.prepare('DELETE FROM event_participants WHERE event_id = ?').run(eventId);
+  // La sous-requête garantit qu'on ne rattache jamais un membre d'un autre foyer.
   const insert = db.prepare(
-    'INSERT OR IGNORE INTO event_participants (event_id, member_id) VALUES (?, ?)',
+    `INSERT OR IGNORE INTO event_participants (event_id, member_id)
+     SELECT ?, id FROM members WHERE id = ? AND household_id = ?`,
   );
-  for (const memberId of new Set(memberIds)) insert.run(eventId, memberId);
+  for (const memberId of new Set(memberIds)) insert.run(eventId, memberId, householdId);
 }
 
 export interface CreateEventOptions {
@@ -168,6 +185,7 @@ export interface CreateEventOptions {
 
 export function createEvent(
   db: Db,
+  householdId: number,
   input: EventInput,
   options: CreateEventOptions = {},
 ): EventDetail {
@@ -175,34 +193,36 @@ export function createEvent(
   const detail = db.transaction(() => {
     const info = db
       .prepare(
-        `INSERT INTO events (title, description, location, starts_at, ends_at, all_day,
-                             timezone, owner_member_id, source)
-         VALUES (@title, @description, @location, @starts_at, @ends_at, @all_day,
-                 @timezone, @owner_member_id, @source)`,
+        `INSERT INTO events (household_id, title, description, location, starts_at, ends_at,
+                             all_day, timezone, owner_member_id, source)
+         VALUES (@household_id, @title, @description, @location, @starts_at, @ends_at,
+                 @all_day, @timezone, @owner_member_id, @source)`,
       )
       .run({
         ...normalized,
+        household_id: householdId,
         owner_member_id: input.ownerMemberId ?? null,
         source: options.source ?? 'app',
       });
     const eventId = Number(info.lastInsertRowid);
-    replaceParticipants(db, eventId, input.participantIds ?? []);
+    replaceParticipants(db, householdId, eventId, input.participantIds ?? []);
     syncRemindersForEvent(db, { id: eventId, ...normalized }, {
       reminderHour: config.reminderHour,
       now: options.now,
     });
-    return getEventDetail(db, eventId)!;
+    return getEventDetail(db, householdId, eventId)!;
   })();
   return detail;
 }
 
 export function updateEvent(
   db: Db,
+  householdId: number,
   id: number,
   input: EventInput,
   options: CreateEventOptions = {},
 ): EventDetail | undefined {
-  if (!getEvent(db, id)) return undefined;
+  if (!getEvent(db, householdId, id)) return undefined;
   const normalized = normalizeEventInput(input);
   return db.transaction(() => {
     db.prepare(
@@ -210,19 +230,27 @@ export function updateEvent(
               starts_at = @starts_at, ends_at = @ends_at, all_day = @all_day,
               timezone = @timezone, owner_member_id = @owner_member_id,
               updated_at = datetime('now')
-       WHERE id = @id`,
-    ).run({ ...normalized, id, owner_member_id: input.ownerMemberId ?? null });
-    replaceParticipants(db, id, input.participantIds ?? []);
+       WHERE id = @id AND household_id = @household_id`,
+    ).run({
+      ...normalized,
+      id,
+      household_id: householdId,
+      owner_member_id: input.ownerMemberId ?? null,
+    });
+    replaceParticipants(db, householdId, id, input.participantIds ?? []);
     syncRemindersForEvent(db, { id, ...normalized }, {
       reminderHour: config.reminderHour,
       now: options.now,
     });
-    return getEventDetail(db, id)!;
+    return getEventDetail(db, householdId, id)!;
   })();
 }
 
-export function deleteEvent(db: Db, id: number): boolean {
-  return db.prepare('DELETE FROM events WHERE id = ?').run(id).changes > 0;
+export function deleteEvent(db: Db, householdId: number, id: number): boolean {
+  return (
+    db.prepare('DELETE FROM events WHERE id = ? AND household_id = ?').run(id, householdId)
+      .changes > 0
+  );
 }
 
 /** Charge la représentation neutre d'un événement, prête à être poussée chez un provider. */
@@ -239,19 +267,24 @@ export function toCalendarPayload(event: EventRow): CalendarEventPayload {
 }
 
 /** Comptes vers lesquels l'événement doit être poussé (sélection explicite ou comptes actifs). */
-export function resolvePushTargets(db: Db, accountIds?: number[]): Account[] {
+export function resolvePushTargets(
+  db: Db,
+  householdId: number,
+  accountIds?: number[],
+): Account[] {
   if (accountIds && accountIds.length > 0) {
     const placeholders = accountIds.map(() => '?').join(', ');
     return db
       .prepare<number[], Account>(
-        `SELECT * FROM accounts WHERE id IN (${placeholders}) AND sync_enabled = 1
-           AND sync_direction IN ('push', 'both')`,
+        `SELECT * FROM accounts WHERE id IN (${placeholders}) AND household_id = ?
+           AND sync_enabled = 1 AND sync_direction IN ('push', 'both')`,
       )
-      .all(...accountIds);
+      .all(...accountIds, householdId);
   }
   return db
-    .prepare<[], Account>(
-      `SELECT * FROM accounts WHERE sync_enabled = 1 AND sync_direction IN ('push', 'both')`,
+    .prepare<[number], Account>(
+      `SELECT * FROM accounts WHERE household_id = ? AND sync_enabled = 1
+         AND sync_direction IN ('push', 'both')`,
     )
-    .all();
+    .all(householdId);
 }

@@ -189,6 +189,7 @@ h2 { font-size: 16px; }
 .members { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 .members li { display: flex; align-items: center; gap: 9px; font-size: 14px; }
 .members .swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.choice .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .members .m-email { color: var(--muted); font-size: 12px; }
 .members button { margin-left: auto; }
 
@@ -273,3 +274,55 @@ h2 { font-size: 16px; }
 }
 
 .empty { color: var(--muted); font-size: 13px; margin: 0; }
+
+/* ── Écran de connexion et pages de retour OAuth ───────────────────────────── */
+.auth-page {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+}
+.auth-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow); padding: 34px 32px; width: min(440px, 100%);
+  text-align: center; display: grid; gap: 14px;
+}
+.auth-mark { font-size: 40px; }
+.auth-card h1 { font-size: 22px; }
+.auth-card p { margin: 0; }
+
+.btn.google-signin {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  text-decoration: none; padding: 11px 18px; font-weight: 500;
+  border-color: var(--border); background: var(--surface);
+}
+.btn.google-signin::before {
+  content: ''; width: 18px; height: 18px; flex: none;
+  background: no-repeat center/contain
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23FFC107' d='M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.05 6.05 29.27 4 24 4 12.95 4 4 12.95 4 24s8.95 20 20 20 20-8.95 20-20c0-1.3-.14-2.65-.4-3.9z'/%3E%3Cpath fill='%23FF3D00' d='m6.31 14.69 6.57 4.82C14.65 15.1 18.96 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.05 6.05 29.27 4 24 4 16.32 4 9.66 8.34 6.31 14.69z'/%3E%3Cpath fill='%234CAF50' d='M24 44c5.16 0 9.86-1.98 13.4-5.2l-6.19-5.24C29.14 35.09 26.7 36 24 36c-5.18 0-9.66-3.28-11.29-7.89l-6.5 5.01C9.5 39.6 16.23 44 24 44z'/%3E%3Cpath fill='%231976D2' d='M43.6 20.1H42V20H24v8h11.3c-.79 2.24-2.23 4.16-4.09 5.56l6.19 5.24C36.97 40.2 44 35 44 24c0-1.3-.14-2.65-.4-3.9z'/%3E%3C/svg%3E");
+}
+
+/* ── Menu du compte connecté ──────────────────────────────────────────────── */
+.account-menu { position: relative; }
+.avatar-button {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border);
+  background: var(--surface-alt); cursor: pointer; padding: 0; overflow: hidden;
+  display: grid; place-items: center;
+}
+.avatar-button img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-fallback { font-weight: 600; color: var(--muted); }
+
+.popover {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 12px; width: 240px; display: grid; gap: 4px;
+}
+.popover-name { margin: 0; font-weight: 600; }
+.popover-mail { margin: 0; overflow-wrap: anywhere; }
+.popover .btn { margin-top: 8px; }
+
+/* ── Lien d'invitation ────────────────────────────────────────────────────── */
+.invite { display: flex; gap: 6px; }
+.invite input {
+  flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--text);
+  background: var(--surface-alt); border: 1px solid var(--border);
+  border-radius: 9px; padding: 7px 9px;
+}
+#invite-code { letter-spacing: 1px; font-family: ui-monospace, SFMono-Regular, monospace; }

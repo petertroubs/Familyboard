@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DateTime } from 'luxon';
-import { openDatabase } from '../src/db/index.ts';
+import { openDatabase, type Db } from '../src/db/index.ts';
+import { createHousehold } from '../src/domain/households.ts';
 import {
   computeReminderSchedule,
   listDueReminders,
@@ -10,6 +11,12 @@ import {
 } from '../src/domain/reminders.ts';
 
 const PARIS = 'Europe/Paris';
+
+function setup(): Db {
+  const db = openDatabase(':memory:');
+  createHousehold(db, 'Famille de test');
+  return db;
+}
 
 function parisEvent(localStart: string, allDay = false) {
   return {
@@ -102,9 +109,10 @@ test('les événements « journée entière » sont rappelés à l’heure confi
 });
 
 test('replanifier un événement déplace les rappels en attente sans toucher aux envoyés', () => {
-  const db = openDatabase(':memory:');
+  const db = setup();
   db.prepare(
-    `INSERT INTO events (id, title, starts_at, ends_at, timezone) VALUES (1, 'Test', ?, ?, ?)`,
+    `INSERT INTO events (id, household_id, title, starts_at, ends_at, timezone)
+     VALUES (1, 1, 'Test', ?, ?, ?)`,
   ).run(parisEvent('2026-10-15T18:30').starts_at, parisEvent('2026-10-15T19:30').starts_at, PARIS);
 
   const now = new Date('2026-09-01T10:00:00Z');
@@ -127,9 +135,10 @@ test('replanifier un événement déplace les rappels en attente sans toucher au
 });
 
 test('listDueReminders ne renvoie que les échéances atteintes', () => {
-  const db = openDatabase(':memory:');
+  const db = setup();
   db.prepare(
-    `INSERT INTO events (id, title, starts_at, ends_at, timezone) VALUES (1, 'Test', ?, ?, ?)`,
+    `INSERT INTO events (id, household_id, title, starts_at, ends_at, timezone)
+     VALUES (1, 1, 'Test', ?, ?, ?)`,
   ).run('2026-10-15T16:30:00.000Z', '2026-10-15T17:30:00.000Z', PARIS);
   syncRemindersForEvent(db, { id: 1, ...parisEvent('2026-10-15T18:30') }, {
     reminderHour: 8,
@@ -143,9 +152,10 @@ test('listDueReminders ne renvoie que les échéances atteintes', () => {
 });
 
 test('un rappel n’est abandonné qu’après trois tentatives', () => {
-  const db = openDatabase(':memory:');
+  const db = setup();
   db.prepare(
-    `INSERT INTO events (id, title, starts_at, ends_at, timezone) VALUES (1, 'Test', ?, ?, ?)`,
+    `INSERT INTO events (id, household_id, title, starts_at, ends_at, timezone)
+     VALUES (1, 1, 'Test', ?, ?, ?)`,
   ).run('2026-10-15T16:30:00.000Z', '2026-10-15T17:30:00.000Z', PARIS);
   db.prepare(
     `INSERT INTO reminders (id, event_id, offset_key, scheduled_at) VALUES (1, 1, 'same_day', ?)`,

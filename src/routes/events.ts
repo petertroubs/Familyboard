@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { scopeOf } from '../auth/middleware.ts';
 import { getDb } from '../db/index.ts';
 import {
   createEvent,
@@ -15,7 +16,7 @@ export const eventsRouter: Router = Router();
 
 eventsRouter.get('/', (req, res) => {
   const { from, to, memberId } = req.query;
-  const events = listEvents(getDb(), {
+  const events = listEvents(getDb(), scopeOf(req).householdId, {
     from: typeof from === 'string' ? from : undefined,
     to: typeof to === 'string' ? to : undefined,
     memberId: typeof memberId === 'string' && memberId ? Number(memberId) : undefined,
@@ -24,7 +25,7 @@ eventsRouter.get('/', (req, res) => {
 });
 
 eventsRouter.get('/:id', (req, res) => {
-  const event = getEventDetail(getDb(), Number(req.params.id));
+  const event = getEventDetail(getDb(), scopeOf(req).householdId, Number(req.params.id));
   if (!event) {
     res.status(404).json({ error: 'Événement introuvable' });
     return;
@@ -39,10 +40,11 @@ eventsRouter.post('/', async (req, res, next) => {
     return;
   }
   try {
-    const event = createEvent(getDb(), parsed.data);
+    const { householdId } = scopeOf(req);
+    const event = createEvent(getDb(), householdId, parsed.data);
     // La synchronisation ne doit pas faire échouer la création locale.
-    const sync = await pushEvent(getDb(), event.id, parsed.data.syncAccountIds);
-    res.status(201).json({ event: getEventDetail(getDb(), event.id), sync });
+    const sync = await pushEvent(getDb(), householdId, event.id, parsed.data.syncAccountIds);
+    res.status(201).json({ event: getEventDetail(getDb(), householdId, event.id), sync });
   } catch (error) {
     if (error instanceof EventValidationError) {
       res.status(400).json({ error: error.message });
@@ -59,14 +61,15 @@ eventsRouter.put('/:id', async (req, res, next) => {
     return;
   }
   try {
+    const { householdId } = scopeOf(req);
     const id = Number(req.params.id);
-    const event = updateEvent(getDb(), id, parsed.data);
+    const event = updateEvent(getDb(), householdId, id, parsed.data);
     if (!event) {
       res.status(404).json({ error: 'Événement introuvable' });
       return;
     }
-    const sync = await pushEvent(getDb(), id, parsed.data.syncAccountIds);
-    res.json({ event: getEventDetail(getDb(), id), sync });
+    const sync = await pushEvent(getDb(), householdId, id, parsed.data.syncAccountIds);
+    res.json({ event: getEventDetail(getDb(), householdId, id), sync });
   } catch (error) {
     if (error instanceof EventValidationError) {
       res.status(400).json({ error: error.message });
@@ -78,15 +81,16 @@ eventsRouter.put('/:id', async (req, res, next) => {
 
 eventsRouter.post('/:id/push', async (req, res, next) => {
   try {
+    const { householdId } = scopeOf(req);
     const id = Number(req.params.id);
-    if (!getEventDetail(getDb(), id)) {
+    if (!getEventDetail(getDb(), householdId, id)) {
       res.status(404).json({ error: 'Événement introuvable' });
       return;
     }
     const accountIds = Array.isArray(req.body?.accountIds)
       ? req.body.accountIds.map(Number).filter(Number.isFinite)
       : undefined;
-    res.json({ sync: await pushEvent(getDb(), id, accountIds) });
+    res.json({ sync: await pushEvent(getDb(), householdId, id, accountIds) });
   } catch (error) {
     next(error);
   }
@@ -94,14 +98,15 @@ eventsRouter.post('/:id/push', async (req, res, next) => {
 
 eventsRouter.delete('/:id', async (req, res, next) => {
   try {
+    const { householdId } = scopeOf(req);
     const id = Number(req.params.id);
-    if (!getEventDetail(getDb(), id)) {
+    if (!getEventDetail(getDb(), householdId, id)) {
       res.status(404).json({ error: 'Événement introuvable' });
       return;
     }
     // Les copies distantes partent d'abord : après suppression locale, les liens sont perdus.
-    await deleteRemoteCopies(getDb(), id);
-    deleteEvent(getDb(), id);
+    await deleteRemoteCopies(getDb(), householdId, id);
+    deleteEvent(getDb(), householdId, id);
     res.status(204).end();
   } catch (error) {
     next(error);

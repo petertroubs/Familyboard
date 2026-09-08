@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { scopeOf } from '../auth/middleware.ts';
 import { config, isProviderConfigured, redirectUri, type ProviderId } from '../config.ts';
 import { getDb } from '../db/index.ts';
 import {
@@ -8,6 +9,7 @@ import {
   updateAccountSettings,
   upsertAccount,
 } from '../domain/accounts.ts';
+import { getMemberForUser } from '../domain/households.ts';
 import type { AccountKind } from '../domain/types.ts';
 import { getProvider } from '../providers/index.ts';
 
@@ -21,27 +23,26 @@ function parseProvider(value: string): ProviderId | undefined {
   return PROVIDER_IDS.find((id) => id === value);
 }
 
+/** Fiche du foyer correspondant au compte connecté, si elle existe. */
+function memberIdForUser(userId: number | null): number | null {
+  if (userId === null) return null;
+  const member = getMemberForUser(getDb(), userId);
+  return member?.id ?? null;
+}
+
 function resultPage(title: string, message: string, ok: boolean): string {
+  const escape = (value: string) =>
+    value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return `<!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>${title}</title>
-<style>
-  body { font-family: system-ui, sans-serif; background: #f5f6fa; display: grid;
-         place-items: center; min-height: 100vh; margin: 0; color: #1c2130; }
-  .card { background: #fff; padding: 32px 36px; border-radius: 14px; max-width: 460px;
-          box-shadow: 0 10px 30px rgb(20 25 45 / 12%); text-align: center; }
-  .badge { font-size: 34px; }
-  a { color: #4f7cff; }
-</style></head>
-<body><div class="card">
-  <div class="badge">${ok ? '✅' : '⚠️'}</div>
-  <h1 style="font-size:20px">${title}</h1>
-  <p>${message}</p>
-  <p><a href="/">Retour à l'agenda familial</a></p>
-</div>
-<script>
-  // La fenêtre de consentement se referme d'elle-même quand elle a été ouverte en popup.
-  if (window.opener) { window.opener.postMessage({ type: 'familyboard:oauth', ok: ${ok} }, '*'); setTimeout(() => window.close(), 1200); }
-</script>
+<html lang="fr"><head><meta charset="utf-8"><title>${escape(title)}</title>
+<link rel="stylesheet" href="/styles.css"></head>
+<body data-ok="${ok}"><main class="auth-page"><div class="auth-card">
+  <div class="auth-mark">${ok ? '✅' : '⚠️'}</div>
+  <h1>${escape(title)}</h1>
+  <p class="muted">${escape(message)}</p>
+  <p><a class="btn ghost" href="/">Retour à l'agenda familial</a></p>
+</div></main>
+<script src="/oauth-result.js" type="module"></script>
 </body></html>`;
 }
 
@@ -64,14 +65,15 @@ oauthRouter.get('/:provider/start', (req, res) => {
       );
     return;
   }
-  const kind: AccountKind = req.query.kind === 'pro' ? 'pro' : req.query.kind === 'personal' ? 'personal' : DEFAULT_KIND[provider];
-  const memberId = req.query.memberId ? Number(req.query.memberId) : null;
-  const state = createOAuthState(
-    getDb(),
-    provider,
-    kind,
-    Number.isFinite(memberId) ? memberId : null,
-  );
+  const kind: AccountKind =
+    req.query.kind === 'pro' ? 'pro' : req.query.kind === 'personal' ? 'personal' : DEFAULT_KIND[provider];
+  const requestedMember = req.query.memberId ? Number(req.query.memberId) : null;
+  const { householdId, userId } = scopeOf(req);
+  const state = createOAuthState(getDb(), provider, kind, {
+    householdId,
+    userId,
+    memberId: requestedMember !== null && Number.isFinite(requestedMember) ? requestedMember : null,
+  });
   res.redirect(
     getProvider(provider).authorizationUrl({ state, redirectUri: redirectUri(provider) }),
   );
@@ -104,7 +106,7 @@ oauthRouter.get('/:provider/callback', async (req, res) => {
     return;
   }
   const consumed = consumeOAuthState(getDb(), state);
-  if (!consumed || consumed.provider !== provider) {
+  if (!consumed || consumed.provider !== provider || consumed.household_id === null) {
     res
       .status(400)
       .send(
@@ -122,9 +124,12 @@ oauthRouter.get('/:provider/callback', async (req, res) => {
     const tokens = await api.exchangeCode(code, redirectUri(provider));
     const identity = await api.identity(tokens.accessToken);
     const account = upsertAccount(getDb(), {
+      householdId: consumed.household_id,
+      userId: consumed.user_id,
       provider,
       kind: consumed.kind,
-      memberId: consumed.member_id,
+      // À défaut de fiche explicite, l'agenda est rattaché à la personne connectée.
+      memberId: consumed.member_id ?? memberIdForUser(consumed.user_id),
       accountEmail: identity.email || `${provider}-${Date.now()}`,
       displayName: identity.displayName,
       tokens,
@@ -136,7 +141,7 @@ oauthRouter.get('/:provider/callback', async (req, res) => {
       const calendars = await api.listCalendars(token);
       const primary = calendars.find((calendar) => calendar.primary) ?? calendars[0];
       if (primary) {
-        updateAccountSettings(getDb(), account.id, {
+        updateAccountSettings(getDb(), consumed.household_id, account.id, {
           calendarId: primary.id,
           calendarName: primary.name,
         });

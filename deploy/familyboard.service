@@ -1,0 +1,34 @@
+# Installation directe sur un VPS, sans Docker.
+#   sudo cp deploy/familyboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now familyboard
+[Unit]
+Description=FamilyBoard — agenda familial partagé
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=familyboard
+Group=familyboard
+WorkingDirectory=/opt/familyboard
+EnvironmentFile=/etc/familyboard.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=5
+
+# Renforcement : le service n'a besoin d'écrire que dans son répertoire de données.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/familyboard
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target
