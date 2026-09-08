@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agenda familial — FamilyBoard</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📅</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">📅</span>
+        <div>
+          <h1>Agenda familial</h1>
+          <p id="topbar-subtitle" class="muted">Chargement…</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <label class="field inline">
+          <span class="sr-only">Filtrer par membre</span>
+          <select id="member-filter" aria-label="Filtrer par membre">
+            <option value="">Tout le foyer</option>
+          </select>
+        </label>
+        <button id="btn-notifications" class="btn ghost" type="button" aria-expanded="false">
+          🔔 Rappels <span id="unread-badge" class="badge" hidden>0</span>
+        </button>
+        <button id="btn-new-event" class="btn primary" type="button">+ Nouvelle date</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="calendar-panel" aria-label="Calendrier">
+        <div class="calendar-header">
+          <div class="month-nav">
+            <button id="btn-prev" class="btn icon" type="button" aria-label="Mois précédent">‹</button>
+            <button id="btn-today" class="btn ghost" type="button">Aujourd'hui</button>
+            <button id="btn-next" class="btn icon" type="button" aria-label="Mois suivant">›</button>
+          </div>
+          <h2 id="month-label">…</h2>
+        </div>
+
+        <div class="weekdays" aria-hidden="true">
+          <span>Lun</span><span>Mar</span><span>Mer</span><span>Jeu</span>
+          <span>Ven</span><span>Sam</span><span>Dim</span>
+        </div>
+        <div id="calendar-grid" class="calendar-grid"></div>
+
+        <h3 class="section-title">Prochaines dates</h3>
+        <ul id="upcoming" class="upcoming"></ul>
+      </section>
+
+      <aside class="side">
+        <section class="card">
+          <h2>Agendas synchronisés</h2>
+          <p class="muted small">
+            Reliez un compte Google personnel et un compte Outlook professionnel : les dates
+            ajoutées ici y sont créées, et les dates créées là-bas remontent dans l'agenda familial.
+          </p>
+          <div id="accounts-list" class="accounts"></div>
+          <div class="connect-row">
+            <button id="btn-connect-google" class="btn provider google" type="button">
+              Relier Google (perso)
+            </button>
+            <button id="btn-connect-outlook" class="btn provider outlook" type="button">
+              Relier Outlook (pro)
+            </button>
+          </div>
+          <button id="btn-pull-all" class="btn ghost full" type="button">
+            ⟳ Importer les dates externes maintenant
+          </button>
+          <p id="sync-status" class="muted small" role="status"></p>
+        </section>
+
+        <section class="card">
+          <h2>Module de rappels</h2>
+          <ul id="reminder-info" class="reminder-info"></ul>
+        </section>
+
+        <section class="card">
+          <h2>Membres du foyer</h2>
+          <ul id="members-list" class="members"></ul>
+          <form id="member-form" class="stack">
+            <div class="row">
+              <label class="field grow">
+                <span>Prénom</span>
+                <input name="name" required maxlength="80" placeholder="Camille" />
+              </label>
+              <label class="field color">
+                <span>Couleur</span>
+                <input name="color" type="color" value="#4f7cff" />
+              </label>
+            </div>
+            <label class="field">
+              <span>E-mail (pour les rappels)</span>
+              <input name="email" type="email" placeholder="camille@exemple.fr" />
+            </label>
+            <button class="btn ghost" type="submit">Ajouter le membre</button>
+          </form>
+        </section>
+      </aside>
+    </main>
+
+    <!-- Panneau des rappels reçus -->
+    <div id="notifications-panel" class="drawer" hidden>
+      <div class="drawer-header">
+        <h2>Rappels</h2>
+        <div>
+          <button id="btn-read-all" class="btn ghost small" type="button">Tout marquer lu</button>
+          <button id="btn-close-notifications" class="btn icon" type="button" aria-label="Fermer">×</button>
+        </div>
+      </div>
+      <ul id="notifications-list" class="notifications"></ul>
+    </div>
+
+    <!-- Formulaire d'événement -->
+    <div id="event-dialog" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title">
+        <div class="modal-header">
+          <h2 id="event-dialog-title">Nouvelle date</h2>
+          <button id="btn-close-dialog" class="btn icon" type="button" aria-label="Fermer">×</button>
+        </div>
+
+        <form id="event-form" class="stack">
+          <input type="hidden" name="id" />
+
+          <label class="field">
+            <span>Titre *</span>
+            <input name="title" required maxlength="300" placeholder="Réunion parents-profs" />
+          </label>
+
+          <label class="field">
+            <span>Descriptif</span>
+            <textarea name="description" rows="3" maxlength="5000"
+              placeholder="Salle B12, apporter le carnet de correspondance…"></textarea>
+          </label>
+
+          <label class="field">
+            <span>Lieu</span>
+            <input name="location" maxlength="300" placeholder="École Jean Jaurès" />
+          </label>
+
+          <label class="checkbox">
+            <input name="allDay" type="checkbox" />
+            <span>Journée entière</span>
+          </label>
+
+          <div class="row">
+            <label class="field grow">
+              <span>Début *</span>
+              <input name="startsAt" type="datetime-local" required />
+            </label>
+            <label class="field grow">
+              <span>Fin</span>
+              <input name="endsAt" type="datetime-local" />
+            </label>
+          </div>
+
+          <div class="row">
+            <label class="field grow">
+              <span>Créé par</span>
+              <select name="ownerMemberId">
+                <option value="">—</option>
+              </select>
+            </label>
+          </div>
+
+          <fieldset class="fieldset">
+            <legend>Qui est concerné (reçoit les rappels)</legend>
+            <div id="participants-choices" class="choices"></div>
+            <p class="muted small">Sans sélection, tout le foyer est prévenu.</p>
+          </fieldset>
+
+          <fieldset class="fieldset">
+            <legend>Synchroniser vers</legend>
+            <div id="sync-choices" class="choices"></div>
+            <p class="muted small" id="sync-choices-empty" hidden>
+              Aucun agenda relié pour l'instant.
+            </p>
+          </fieldset>
+
+          <div id="reminder-preview" class="reminder-preview" hidden></div>
+
+          <p id="event-error" class="error" role="alert" hidden></p>
+
+          <div class="modal-actions">
+            <button id="btn-delete-event" class="btn danger" type="button" hidden>Supprimer</button>
+            <div class="spacer"></div>
+            <button id="btn-cancel-event" class="btn ghost" type="button">Annuler</button>
+            <button id="btn-save-event" class="btn primary" type="submit">Enregistrer</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
